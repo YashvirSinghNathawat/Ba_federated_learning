@@ -4,6 +4,12 @@ import numpy as np
 from models.aggregation import aggregate_weights
 from models.boneage_model import BoneAgeRegressor
 from training.evaluation import evaluate_model
+import os
+from tensorflow.keras.models import save_model
+
+model_dir = "results"
+# Create model directory
+os.makedirs(model_dir, exist_ok=True)
 
 def federated_training(clients_data, server_data, num_rounds=10, client_epochs=1, save_rounds=20):
 
@@ -115,7 +121,12 @@ def federated_training(clients_data, server_data, num_rounds=10, client_epochs=1
         if server_metrics['mae'] < best_server_mae and round_num < save_rounds:
             best_server_mae = server_metrics['mae']
             best_round = round_num
-            best_weights = [w.copy() for w in global_weights]
+            best_weights = global_model.get_weights()
+            
+            model_path = os.path.join(model_dir, f'best_model_round{round_num+1}_mae{best_server_mae:.2f}.keras')
+            save_model(global_model, model_path)
+            print(f"🔥 New best model saved to {model_path}")
+            
 
         # Round timing
         round_time = time.time() - round_start_time
