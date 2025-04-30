@@ -3,6 +3,7 @@ from training.federated import federated_training
 import sys
 import os
 import json
+from training.evaluation import evaluate_model
 
 CLIENT_PATHS = [
     'data/boneage_clahe_client_1.parquet',
@@ -17,7 +18,7 @@ def main():
     clients_data = [load_client_data(path) for path in CLIENT_PATHS]
     server_data = load_server_data(SERVER_PATH) 
     
-    num_rounds = 50
+    num_rounds = 100
     client_epochs = 1
     
     # Print info for each client
@@ -37,18 +38,32 @@ def main():
     print(f"male shape: {male.shape}, dtype: {male.dtype}")
     print(f"y shape: {y.shape}, dtype: {y.dtype}")
     
+    # FedAvg
     model, history, time_metrics, best_round = federated_training(
         clients_data=clients_data,
         server_data=server_data,
         num_rounds=num_rounds,
-        client_epochs=client_epochs
+        client_epochs=client_epochs,
+        aggregation_strategy='fed_avg',  # Choose strategy
     )
+    
+    # # FedProx
+    # model, history, time_metrics, best_round = federated_training(
+    #     clients_data=clients_data,
+    #     server_data=server_data,
+    #     num_rounds=50,
+    #     client_epochs=1,
+    #     aggregation_strategy='fed_prox',  # Choose strategy
+    #     fedprox_mu=0.1,  # FedProx hyperparameter
+    #     client_samples=[len(y_train) for (_,_,y_train,_,_,_) in clients_data]
+    # )
+    
     # Save model
     model.save('results/boneage_fl_model.keras')
     
     # Final Evaluation of Best Model
     
-    server_metrics = evaluate_model(global_model, X, y, male)
+    server_metrics = evaluate_model(model, X, y, male)
     print(f"\nBest Model Server Metrics - Loss: {server_metrics['loss']:.4f}, MAE: {server_metrics['mae']:.4f}")
     
     # Report best round

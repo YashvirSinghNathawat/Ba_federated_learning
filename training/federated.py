@@ -1,17 +1,21 @@
 import time
 import gc
 import numpy as np
-from models.aggregation import aggregate_weights
 from models.boneage_model import BoneAgeRegressor
 from training.evaluation import evaluate_model
+from training.fedprox import train_fedprox
 import os
 from tensorflow.keras.models import save_model
+from models.aggregation import STRATEGIES
+from tensorflow.keras import losses
+import tensorflow as tf
+
 
 model_dir = "results"
 # Create model directory
 os.makedirs(model_dir, exist_ok=True)
 
-def federated_training(clients_data, server_data, num_rounds=10, client_epochs=1, save_rounds=20):
+def federated_training(clients_data, server_data, num_rounds=10, client_epochs=1, aggregation_strategy='fed_avg', client_samples=None, fedprox_mu=0.01,save_rounds=100):
 
     # Initialize timers dictionary
     time_metrics = {
@@ -20,6 +24,13 @@ def federated_training(clients_data, server_data, num_rounds=10, client_epochs=1
         'aggregation_times': [],
         'evaluation_times': []
     }
+    
+    # Get aggregation function
+    try:
+        aggregate_fn = STRATEGIES[aggregation_strategy]
+    except KeyError:
+        raise ValueError(f"Unknown strategy: {aggregation_strategy}. "
+                       f"Available: {list(STRATEGIES.keys())}")
     
     # Initialize global model
     regressor = BoneAgeRegressor(activation='relu', dropout_rate=0.2)
@@ -72,28 +83,54 @@ def federated_training(clients_data, server_data, num_rounds=10, client_epochs=1
             if round_num > 0:
                 client_models[i].set_weights(global_weights)
             
-            # Train for specified epochs
-            client_history = client_models[i].fit(
-                [X_train, male_train], y_train,
-                validation_data=([X_val, male_val], y_val),
-                epochs=client_epochs,
-                batch_size=32,
-                verbose=1
-            )
+            # # Train for specified epochs
+            # client_history = client_models[i].fit(
+            #     [X_train, male_train], y_train,
+            #     validation_data=([X_val, male_val], y_val),
+            #     epochs=client_epochs,
+            #     batch_size=32,
+            #     verbose=1
+            # )
+            
+            # FedProx requires custom training loop
+            if aggregation_strategy == 'fed_prox':
+                optimizer = tf.keras.optimizers.Adam(learning_rate=0.001)
+                for _ in range(client_epochs):
+                    train_fedprox(client_models[i], X_train, y_train, male_train, 
+                                global_weights, optimizer, mu=fedprox_mu)
+                # Manual metrics for FedProx
+                preds = client_models[i]([X_train, male_train])
+                train_loss = float(losses.MSE(y_train, preds))
+                train_mae = float(tf.reduce_mean(tf.abs(y_train - preds)))
+                val_preds = client_models[i]([X_val, male_val])
+                val_loss = float(losses.MSE(y_val, val_preds))
+                val_mae = float(tf.reduce_mean(tf.abs(y_val - val_preds)))
+            else:
+                client_history = client_models[i].fit([X_train, male_train], y_train, 
+                               validation_data=([X_val, male_val], y_val),
+                               epochs=client_epochs, 
+                               batch_size=32,
+                               verbose=1)
+                # Standard training
+                
+                train_loss = client_history.history['loss'][-1]
+                train_mae = client_history.history['mae'][-1]
+                val_loss = client_history.history['val_loss'][-1]
+                val_mae = client_history.history['val_mae'][-1]
             
             # Store metrics
-            history['client_train_loss'][i].append(client_history.history['loss'][-1])
-            history['client_train_mae'][i].append(client_history.history['mae'][-1])
-            history['client_val_loss'][i].append(client_history.history['val_loss'][-1])
-            history['client_val_mae'][i].append(client_history.history['val_mae'][-1])
+            history['client_train_loss'][i].append(train_loss)
+            history['client_train_mae'][i].append(train_mae)
+            history['client_val_loss'][i].append(val_loss)
+            history['client_val_mae'][i].append(val_mae)
             
             # Collect weights
             client_weights.append(client_models[i].get_weights())
             client_metrics.append({
-                'train_loss': client_history.history['loss'][-1],
-                'train_mae': client_history.history['mae'][-1],
-                'val_loss': client_history.history['val_loss'][-1],
-                'val_mae': client_history.history['val_mae'][-1]
+                'train_loss': train_loss,
+                'train_mae': train_mae,
+                'val_loss': val_loss,
+                'val_mae': val_mae
             })
             
             client_training_time = time.time() - client_start_time
@@ -102,7 +139,13 @@ def federated_training(clients_data, server_data, num_rounds=10, client_epochs=1
         
         # Aggregate weights
         aggregation_start = time.time()
-        global_weights = aggregate_weights(client_weights)
+        # Aggregation
+        if aggregation_strategy == 'fed_avg_weighted':
+            global_weights = aggregate_fn(client_weights, client_samples)
+        elif aggregation_strategy == 'fed_prox':
+            global_weights = aggregate_fn(global_weights, client_weights, fedprox_mu)
+        else:
+            global_weights = aggregate_fn(client_weights)
         time_metrics['aggregation_times'].append(time.time() - aggregation_start)
         
         # Evaluate on server data
