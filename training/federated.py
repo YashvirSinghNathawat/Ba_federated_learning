@@ -29,7 +29,7 @@ def federated_training(clients_data, server_data, num_rounds=10, client_epochs=1
         client_models.append(model)
     
     # Prepare server data
-    X_server, male_server, y_server = server_data
+    X_server, y_server, male_server  = server_data
     
     # Track metrics
     history = {

@@ -1,2 +1,5 @@
 wslenv
 data
+output.txt
+__pycache__
+results
